@@ -56,7 +56,7 @@ Harness 的 Web UI 只监听 `127.0.0.1`，出了这台电脑就够不着。常�
 
 Agent 侧还注册了 6 个工具（`remote_control_status` / `_start` / `_stop` / `_pair` / `_clients` / `_disconnect`），可以直接在对话里让 Agent 生成配对码。
 
-设置页（设置 → **远程访问**）提供状态、配对码、已连接设备、可访问目录与撤销配对。
+设置页（设置 → **远程访问**）提供状态、**配对二维码**、已连接设备、可访问目录与撤销配对。二维码由内置编码器实时生成（byte 模式、ECC L、版本自适应），手机客户端直接扫即可，不需要联网、不调用任何第三方服务。
 
 ## 工作方式
 
@@ -93,7 +93,9 @@ STUN + 打洞                 公网映射探测，双向 PUNCH
 
 ### 2. 生成配对码
 
-设置 → **远程访问** → **生成配对码**，得到一串 `dshr1.…`；也可以让 Agent 直接调用 `remote_control_pair`。
+设置 → **远程访问** → **生成配对码**，得到一串 `dshr1.…` 和一个二维码；也可以让 Agent 直接调用 `remote_control_pair`。
+
+二维码里就是那串文本（870 字节 → 101×101 模块的 v21 符号），手机端用 `@kit.ScanKit` 扫出来直接喂给客户端即可。
 
 ### 3. 连接
 
@@ -182,11 +184,12 @@ node relay/relay.js --port 45880 --token <共享口令>
 | 跨两个不同 NAT 的真实打洞 | **未验证**（只有回环验证） |
 | 中继跑在真实公网机 | **未验证** |
 | 设置页渲染 | 用极简 React 运行时做过无头渲染断言，**未做像素级验证** |
+| 配对二维码 | 无头测试里用 jsQR 反向解码成功（含 870 字节真实配对码） |
 | 鸿蒙 SDK | 未在 DevEco 编译验证 |
 
 路线图：
 
-- [ ] 设置页内直接渲染配对二维码（内置 QR 编码器，无依赖）
+- [x] 设置页内直接渲染配对二维码（内置 QR 编码器，无依赖）
 - [ ] 每设备密钥 + 首次连接审批 + 访问日志
 - [ ] 文件传输的并行流 / 压缩
 - [ ] 侧边栏一键入口与「远程在线」状态胶囊
@@ -199,6 +202,10 @@ node test/e2e.mjs           # TCP / UDP 打洞 / 中继 三条路径
 node test/plugin-smoke.mjs  # 插件入口、6 个工具、HTTP 路由
 node test/panel-render.mjs  # 设置页无头渲染（首屏 + 空状态，中文）
 $env:PANEL_LANG='en'; node test/panel-render.mjs   # 英文文案
+node test/qr.mjs            # 配对二维码的结构与版本
+
+# 可选：用 jsQR 把生成的位图反向解码，证明真能扫
+$env:JSQR_PATH="$env:TEMP\jsqr.js"; node test/qr.mjs
 ```
 
 无构建步骤、无运行时依赖：全部是 Node 标准库（`node:crypto` / `node:dgram` / `node:net`）。浏览器侧只有一个不打包的 `client.js`。

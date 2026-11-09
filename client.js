@@ -50,7 +50,8 @@ window.__ModuleLoader__.load({
         devices: 'Devices',
         pairingHint: 'Send this code to the other device and paste it into the client app. Anyone holding it can connect until you revoke pairings.',
         pairingEmpty: 'No code yet. Create one once the other device is ready — codes stay valid for 30 minutes.',
-        pairingSteps: '1. Copy the code   2. Paste it into the client app (or scan its QR)   3. The client picks the fastest path: LAN, hole punching, then relay',
+        pairingSteps: '1. Copy the code   2. Paste it into the client app (or scan the QR)   3. The client picks the fastest path: LAN, hole punching, then relay',
+        scanHint: 'Scan to pair',
         expiresIn: 'expires in',
         expired: 'expired',
         clientsEmpty: 'No device is connected right now.',
@@ -101,7 +102,8 @@ window.__ModuleLoader__.load({
         devices: '设备',
         pairingHint: '把这段配对码发到另一台设备，粘进客户端应用即可连接。拿到它的人在你撤销配对之前都能连上。',
         pairingEmpty: '还没有配对码。准备好另一台设备后再生成，配对码 30 分钟内有效。',
-        pairingSteps: '1. 复制配对码　2. 粘贴进客户端应用（或扫它的二维码）　3. 客户端自动选择最快路径：局域网 → 打洞 → 中继',
+        pairingSteps: '1. 复制配对码　2. 粘贴进客户端应用（或直接扫码）　3. 客户端自动选择最快路径：局域网 → 打洞 → 中继',
+        scanHint: '扫码配对',
         expiresIn: '剩余',
         expired: '已过期',
         clientsEmpty: '当前没有设备连接。',
@@ -310,6 +312,19 @@ window.__ModuleLoader__.load({
         flex: 'none',
       },
       peerRow: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: '1 1 auto' },
+      qrWrap: {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 6,
+        padding: 8,
+        borderRadius: 10,
+        background: '#fff',
+        border: `1px solid ${T('border-l1')}`,
+        flex: 'none',
+      },
+      qrCanvas: { display: 'block', imageRendering: 'pixelated' },
+      qrCaption: { fontSize: 11, color: '#4a4a4a', lineHeight: 1.4 },
     }
 
     // ------------------------------------------------------------ 小组件
@@ -377,6 +392,55 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function QrCode({ text, caption }) {
+      const [matrix, setMatrix] = React.useState(null)
+      const canvasRef = React.useRef(null)
+
+      React.useEffect(() => {
+        try {
+          setMatrix(qrEncode(text))
+        } catch {
+          setMatrix(null)
+        }
+      }, [text])
+
+      React.useEffect(() => {
+        const canvas = canvasRef.current
+        if (!canvas || !matrix) return undefined
+        if (typeof canvas.getContext !== 'function') return undefined
+        const context = canvas.getContext('2d')
+        if (!context) return undefined
+        const margin = 4
+        const modules = matrix.size + margin * 2
+        const dpr = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1
+        const cssScale = Math.min(8, Math.max(1, Math.floor(340 / modules)))
+        const deviceScale = Math.max(1, Math.round(cssScale * dpr))
+        canvas.width = modules * deviceScale
+        canvas.height = modules * deviceScale
+        canvas.style.width = `${modules * cssScale}px`
+        canvas.style.height = `${modules * cssScale}px`
+        context.imageSmoothingEnabled = false
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, canvas.width, canvas.height)
+        context.fillStyle = '#000000'
+        for (let y = 0; y < matrix.size; y += 1) {
+          for (let x = 0; x < matrix.size; x += 1) {
+            if (!matrix.get(x, y)) continue
+            context.fillRect((margin + x) * deviceScale, (margin + y) * deviceScale, deviceScale, deviceScale)
+          }
+        }
+        return undefined
+      }, [matrix])
+
+      if (!matrix) return null
+      return h(
+        'div',
+        { style: styles.qrWrap },
+        h('canvas', { ref: canvasRef, role: 'img', 'aria-label': caption ?? 'QR', style: styles.qrCanvas }),
+        caption ? h('span', { style: styles.qrCaption }, caption) : null,
+      )
+    }
+
     function formatDuration(ms) {
       const total = Math.max(0, Math.floor(ms / 1000))
       if (total < 60) return `${total}s`
@@ -391,6 +455,350 @@ window.__ModuleLoader__.load({
       const key = `transport.${kind}`
       const text = t(key)
       return text === key ? kind : text
+    }
+
+    // ------------------------------------------------------------ QR 编码
+    //
+    // Byte-mode QR symbol with error correction level L, versions 1..40, so the
+    // pairing code can be scanned off the screen. Self-contained on purpose:
+    // the browser half is served unpackaged and cannot require() a dependency.
+
+    const QR_ECC_PER_BLOCK = [7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]
+    const QR_BLOCKS = [1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25]
+
+    function qrGfMul(x, y) {
+      let z = 0
+      for (let i = 7; i >= 0; i -= 1) {
+        z = (z << 1) ^ ((z >>> 7) * 0x11d)
+        z ^= ((y >>> i) & 1) * x
+      }
+      return z & 0xff
+    }
+
+    function qrRsDivisor(degree) {
+      const result = new Uint8Array(degree)
+      result[degree - 1] = 1
+      let root = 1
+      for (let i = 0; i < degree; i += 1) {
+        for (let j = 0; j < degree; j += 1) {
+          result[j] = qrGfMul(result[j], root)
+          if (j + 1 < degree) result[j] ^= result[j + 1]
+        }
+        root = qrGfMul(root, 0x02)
+      }
+      return result
+    }
+
+    function qrRsRemainder(data, divisor) {
+      const result = new Uint8Array(divisor.length)
+      for (const byte of data) {
+        const factor = byte ^ result[0]
+        result.copyWithin(0, 1)
+        result[result.length - 1] = 0
+        for (let i = 0; i < divisor.length; i += 1) result[i] ^= qrGfMul(divisor[i], factor)
+      }
+      return result
+    }
+
+    function qrSizeOf(version) {
+      return version * 4 + 17
+    }
+
+    function qrAlignPositions(version) {
+      if (version === 1) return []
+      const count = Math.floor(version / 7) + 2
+      const step = version === 32 ? 26 : Math.ceil((version * 4 + 4) / (count * 2 - 2)) * 2
+      const positions = [6]
+      for (let pos = qrSizeOf(version) - 7; positions.length < count; pos -= step) positions.splice(1, 0, pos)
+      return positions
+    }
+
+    function qrCreate(version) {
+      const size = qrSizeOf(version)
+      return {
+        version,
+        size,
+        modules: new Uint8Array(size * size),
+        func: new Uint8Array(size * size),
+        setFunction(x, y, dark) {
+          if (x < 0 || y < 0 || x >= size || y >= size) return
+          this.func[y * size + x] = 1
+          this.modules[y * size + x] = dark ? 1 : 0
+        },
+        setData(x, y, dark) {
+          this.modules[y * size + x] = dark ? 1 : 0
+        },
+        get(x, y) {
+          return this.modules[y * size + x] === 1
+        },
+        isFunction(x, y) {
+          return this.func[y * size + x] === 1
+        },
+      }
+    }
+
+    function qrDrawFormatBits(qr, mask) {
+      const data = (1 << 3) | mask
+      let rem = data
+      for (let i = 0; i < 10; i += 1) rem = (rem << 1) ^ ((rem >>> 9) * 0x537)
+      const bits = ((data << 10) | rem) ^ 0x5412
+      const bit = (index) => ((bits >>> index) & 1) !== 0
+      for (let i = 0; i <= 5; i += 1) qr.setFunction(8, i, bit(i))
+      qr.setFunction(8, 7, bit(6))
+      qr.setFunction(8, 8, bit(7))
+      qr.setFunction(7, 8, bit(8))
+      for (let i = 9; i < 15; i += 1) qr.setFunction(14 - i, 8, bit(i))
+      for (let i = 0; i < 8; i += 1) qr.setFunction(qr.size - 1 - i, 8, bit(i))
+      for (let i = 8; i < 15; i += 1) qr.setFunction(8, qr.size - 15 + i, bit(i))
+      qr.setFunction(8, qr.size - 8, true)
+    }
+
+    function qrDrawFunctionPatterns(qr) {
+      const { size } = qr
+      for (let i = 0; i < size; i += 1) {
+        qr.setFunction(6, i, i % 2 === 0)
+        qr.setFunction(i, 6, i % 2 === 0)
+      }
+      const finder = (cx, cy) => {
+        for (let dy = -4; dy <= 4; dy += 1) {
+          for (let dx = -4; dx <= 4; dx += 1) {
+            const dist = Math.max(Math.abs(dx), Math.abs(dy))
+            const xx = cx + dx
+            const yy = cy + dy
+            if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue
+            qr.setFunction(xx, yy, dist !== 2 && dist !== 4)
+          }
+        }
+      }
+      finder(3, 3)
+      finder(size - 4, 3)
+      finder(3, size - 4)
+
+      const positions = qrAlignPositions(qr.version)
+      const last = positions.length - 1
+      for (let i = 0; i < positions.length; i += 1) {
+        for (let j = 0; j < positions.length; j += 1) {
+          if ((i === 0 && j === 0) || (i === 0 && j === last) || (i === last && j === 0)) continue
+          for (let dy = -2; dy <= 2; dy += 1) {
+            for (let dx = -2; dx <= 2; dx += 1) {
+              qr.setFunction(positions[i] + dx, positions[j] + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1)
+            }
+          }
+        }
+      }
+
+      qrDrawFormatBits(qr, 0)
+      if (qr.version >= 7) {
+        let rem = qr.version
+        for (let i = 0; i < 12; i += 1) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25)
+        const bits = (qr.version << 12) | rem
+        for (let i = 0; i < 18; i += 1) {
+          const dark = ((bits >>> i) & 1) !== 0
+          const a = size - 11 + (i % 3)
+          const b = Math.floor(i / 3)
+          qr.setFunction(a, b, dark)
+          qr.setFunction(b, a, dark)
+        }
+      }
+    }
+
+    function qrFreeModules(version) {
+      const qr = qrCreate(version)
+      qrDrawFunctionPatterns(qr)
+      let free = 0
+      for (let i = 0; i < qr.func.length; i += 1) if (!qr.func[i]) free += 1
+      return free
+    }
+
+    const QR_FREE_CACHE = new Map()
+
+    function qrDataCodewords(version) {
+      if (!QR_FREE_CACHE.has(version)) QR_FREE_CACHE.set(version, Math.floor(qrFreeModules(version) / 8))
+      return QR_FREE_CACHE.get(version) - QR_ECC_PER_BLOCK[version - 1] * QR_BLOCKS[version - 1]
+    }
+
+    function qrEncodeText(text, version) {
+      const bytes = new TextEncoder().encode(text)
+      const capacity = qrDataCodewords(version) * 8
+      const bits = []
+      const push = (value, length) => {
+        for (let i = length - 1; i >= 0; i -= 1) bits.push((value >>> i) & 1)
+      }
+      push(4, 4)
+      push(bytes.length, version <= 9 ? 8 : 16)
+      for (const byte of bytes) push(byte, 8)
+      for (let i = 0; i < 4 && bits.length < capacity; i += 1) bits.push(0)
+      while (bits.length % 8 !== 0) bits.push(0)
+      let pad = true
+      while (bits.length < capacity) {
+        push(pad ? 0xec : 0x11, 8)
+        pad = !pad
+      }
+      const codewords = new Uint8Array(bits.length / 8)
+      for (let i = 0; i < bits.length; i += 1) codewords[i >>> 3] |= bits[i] << (7 - (i & 7))
+      return codewords
+    }
+
+    function qrInterleave(data, version) {
+      const numBlocks = QR_BLOCKS[version - 1]
+      const eccLen = QR_ECC_PER_BLOCK[version - 1]
+      const total = Math.floor(qrFreeModules(version) / 8)
+      const shortCount = numBlocks - (total % numBlocks)
+      const shortLen = Math.floor(total / numBlocks)
+      const divisor = qrRsDivisor(eccLen)
+      const blocks = []
+      let offset = 0
+      for (let i = 0; i < numBlocks; i += 1) {
+        const dataLen = shortLen - eccLen + (i < shortCount ? 0 : 1)
+        const chunk = data.subarray(offset, offset + dataLen)
+        offset += dataLen
+        blocks.push({ data: chunk, ecc: qrRsRemainder(chunk, divisor) })
+      }
+      const maxData = Math.max(...blocks.map((block) => block.data.length))
+      const out = []
+      for (let i = 0; i < maxData; i += 1) {
+        for (const block of blocks) if (i < block.data.length) out.push(block.data[i])
+      }
+      for (let i = 0; i < eccLen; i += 1) {
+        for (const block of blocks) out.push(block.ecc[i])
+      }
+      return Uint8Array.from(out)
+    }
+
+    function qrMaskBit(mask, x, y) {
+      switch (mask) {
+        case 0: return (x + y) % 2 === 0
+        case 1: return y % 2 === 0
+        case 2: return x % 3 === 0
+        case 3: return (x + y) % 3 === 0
+        case 4: return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0
+        case 5: return ((x * y) % 2) + ((x * y) % 3) === 0
+        case 6: return (((x * y) % 2) + ((x * y) % 3)) % 2 === 0
+        default: return (((x + y) % 2) + ((x * y) % 3)) % 2 === 0
+      }
+    }
+
+    function qrDrawCodewords(qr, codewords) {
+      const { size } = qr
+      let i = 0
+      for (let right = size - 1; right >= 1; right -= 2) {
+        if (right === 6) right = 5
+        for (let vert = 0; vert < size; vert += 1) {
+          for (let j = 0; j < 2; j += 1) {
+            const x = right - j
+            const upward = ((right + 1) & 2) === 0
+            const y = upward ? size - 1 - vert : vert
+            if (qr.isFunction(x, y) || i >= codewords.length * 8) continue
+            qr.setData(x, y, ((codewords[i >>> 3] >>> (7 - (i & 7))) & 1) !== 0)
+            i += 1
+          }
+        }
+      }
+    }
+
+    function qrApplyMask(qr, mask) {
+      for (let y = 0; y < qr.size; y += 1) {
+        for (let x = 0; x < qr.size; x += 1) {
+          if (qr.isFunction(x, y)) continue
+          if (qrMaskBit(mask, x, y)) qr.modules[y * qr.size + x] ^= 1
+        }
+      }
+    }
+
+    function qrPenalty(qr) {
+      const { size } = qr
+      let score = 0
+      const at = (x, y) => qr.get(x, y)
+      for (let y = 0; y < size; y += 1) {
+        let runColor = at(0, y)
+        let runLen = 1
+        for (let x = 1; x < size; x += 1) {
+          const dark = at(x, y)
+          if (dark === runColor) {
+            runLen += 1
+            if (runLen === 5) score += 3
+            else if (runLen > 5) score += 1
+          } else {
+            runColor = dark
+            runLen = 1
+          }
+        }
+      }
+      for (let x = 0; x < size; x += 1) {
+        let runColor = at(x, 0)
+        let runLen = 1
+        for (let y = 1; y < size; y += 1) {
+          const dark = at(x, y)
+          if (dark === runColor) {
+            runLen += 1
+            if (runLen === 5) score += 3
+            else if (runLen > 5) score += 1
+          } else {
+            runColor = dark
+            runLen = 1
+          }
+        }
+      }
+      for (let y = 0; y < size - 1; y += 1) {
+        for (let x = 0; x < size - 1; x += 1) {
+          const color = at(x, y)
+          if (color === at(x + 1, y) && color === at(x, y + 1) && color === at(x + 1, y + 1)) score += 3
+        }
+      }
+      const finderLike = (get) => {
+        for (let i = 0; i + 10 < size; i += 1) {
+          if (
+            get(i) && !get(i + 1) && get(i + 2) && get(i + 3) && get(i + 4) && !get(i + 5) && get(i + 6) &&
+            !get(i + 7) && !get(i + 8) && !get(i + 9) && !get(i + 10)
+          ) score += 40
+          if (
+            !get(i) && !get(i + 1) && !get(i + 2) && !get(i + 3) && get(i + 4) && !get(i + 5) &&
+            get(i + 6) && get(i + 7) && get(i + 8) && !get(i + 9) && get(i + 10)
+          ) score += 40
+        }
+      }
+      for (let y = 0; y < size; y += 1) finderLike((i) => at(i, y))
+      for (let x = 0; x < size; x += 1) finderLike((i) => at(x, i))
+      let dark = 0
+      for (let i = 0; i < qr.modules.length; i += 1) dark += qr.modules[i]
+      const total = size * size
+      const percent = (dark * 100) / total
+      score += Math.floor(Math.abs(percent - 50) / 5) * 10
+      return score
+    }
+
+    /** Encode `text` into a QR matrix: `{ version, size, get(x, y) }`. */
+    function qrEncode(text) {
+      const bytes = new TextEncoder().encode(text)
+      let version = 0
+      for (let candidate = 1; candidate <= 40; candidate += 1) {
+        const capacity = qrDataCodewords(candidate) * 8
+        const needed = 4 + (candidate <= 9 ? 8 : 16) + bytes.length * 8
+        if (needed <= capacity) {
+          version = candidate
+          break
+        }
+      }
+      if (!version) throw new Error('payload is too large for one QR symbol')
+      const qr = qrCreate(version)
+      qrDrawFunctionPatterns(qr)
+      const codewords = qrEncodeText(text, version)
+      qrDrawCodewords(qr, qrInterleave(codewords, version))
+      let best = -1
+      let bestScore = Infinity
+      for (let mask = 0; mask < 8; mask += 1) {
+        qrApplyMask(qr, mask)
+        qrDrawFormatBits(qr, mask)
+        const score = qrPenalty(qr)
+        if (score < bestScore) {
+          bestScore = score
+          best = mask
+        }
+        qrApplyMask(qr, mask)
+      }
+      qrApplyMask(qr, best)
+      qrDrawFormatBits(qr, best)
+      return { version, size: qr.size, mask: best, get: (x, y) => qr.get(x, y) }
     }
 
     // ------------------------------------------------------------ 页面
@@ -546,15 +954,26 @@ window.__ModuleLoader__.load({
         ? h(
             'div',
             null,
-            h('div', { style: { padding: '12px 14px 10px' } }, h('pre', { style: styles.codeBox, tabIndex: 0, onClick: (event) => event.currentTarget.select?.() }, pairing.code)),
             h(
               'div',
-              { style: styles.codeActions },
-              h('span', { style: { ...styles.rowHint, ...styles.mono } },
-                remaining > 0 ? `${t('expiresIn')} ${formatDuration(remaining)}` : t('expired')),
-              h('div', { style: { display: 'flex', gap: 8 } },
-                h(CopyBtn, { t, value: pairing.code }),
-                h(Btn, { small: true, busy: busy === 'pair', onClick: () => act('pair', 'pair') }, t('action.pairAgain'))),
+              { style: { display: 'flex', flexWrap: 'wrap', gap: 16, padding: '14px' } },
+              h(QrCode, { text: pairing.code, caption: t('scanHint') }),
+              h(
+                'div',
+                { style: { flex: '1 1 240px', minWidth: 220, display: 'flex', flexDirection: 'column', gap: 10 } },
+                h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' } },
+                  h('span', { style: styles.rowHint }, remaining > 0 ? `${t('expiresIn')} ${formatDuration(remaining)}` : t('expired')),
+                  h(
+                    'div',
+                    { style: { display: 'flex', gap: 8 } },
+                    h(CopyBtn, { t, value: pairing.code }),
+                    h(Btn, { small: true, busy: busy === 'pair', onClick: () => act('pair', 'pair') }, t('action.pairAgain')),
+                  ),
+                ),
+                h('pre', { style: styles.codeBox, onClick: (event) => event.currentTarget.select?.() }, pairing.code),
+              ),
             ),
             h('p', { style: styles.steps }, t('pairingSteps')),
           )
@@ -719,6 +1138,8 @@ window.__ModuleLoader__.load({
 
     return {
       inject: ['slots', 'locale'],
+      /** Exposed for tests: the pairing QR encoder (pure, no DOM). */
+      qrEncode,
       apply(ctx) {
         remoteContext = ctx
         const disposers = []
