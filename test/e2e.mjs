@@ -29,13 +29,14 @@ async function startRelay(port) {
   return child
 }
 
-async function makeServer({ relayPort = 0, tag = 'test' } = {}) {
+async function makeServer({ relayPort = 0, tag = 'test', bindHost = '127.0.0.1' } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `dshr-${tag}-`))
   const server = new RemoteServer({
     ctx: { get: () => undefined },
     config: {
       name: `host-${tag}`,
-      bindHost: '127.0.0.1',
+      bindHost: bindHost,
+      ipv6: true,
       tcpPort: 0,
       udpPort: 0,
       roots: [dataDir],
@@ -129,8 +130,31 @@ async function udpPath() {
   console.log('ok: udp punch path + 512 KiB upload')
 }
 
-async function relayPath() {
-  const relayPort = 45991
+async function v6Path() {
+  const { server, dataDir } = await makeServer({ tag: 'v6', bindHost: '0.0.0.0' })
+  await server.start()
+  const status = server.status()
+  if (!status.ipv6?.length) {
+    console.log('skip: no global IPv6 address on this machine')
+    await server.stop()
+    return
+  }
+  const { code } = await server.createOffer({ refresh: false })
+  const offer = decodeOffer(code)
+  const v6Only = { ...offer, cands: (offer.cands ?? []).filter((entry) => entry.kind === 'tcp' && entry.label === 'v6') }
+  assert.ok(v6Only.cands.length > 0, 'a v6 tcp candidate is advertised')
+  const identity = generateIdentity()
+  const connection = await connectToHost({ offer: v6Only, identity, onStatus: () => {} })
+  assert.equal(connection.transport, 'tcp')
+  const client = new RemoteClient({ channel: connection.channel, device: { name: 'test-v6', os: 'test' } })
+  await exercise(client, dataDir, 'v6')
+  client.close()
+  await sleep(200)
+  await server.stop()
+  console.log('ok: ipv6 path')
+}
+
+async function relayPath() {  const relayPort = 45991
   const relay = await startRelay(relayPort)
   try {
     const { server, dataDir } = await makeServer({ relayPort, tag: 'relay' })
@@ -157,5 +181,6 @@ async function relayPath() {
 
 await tcpPath()
 await udpPath()
+await v6Path()
 await relayPath()
 console.log('all transport paths passed')

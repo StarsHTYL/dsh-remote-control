@@ -155,6 +155,11 @@ interface Candidate {
   label?: string
 }
 
+/** HarmonyOS socket family: 1 = IPv4, 2 = IPv6. */
+function familyOf(host: string): number {
+  return host.includes(':') ? 2 : 1
+}
+
 interface RelayInfo {
   host: string
   port: number
@@ -245,7 +250,7 @@ class UdpLink implements Link {
   private write(bytes: Uint8Array): void {
     this.udp.send({
       data: bytes.buffer as ArrayBuffer,
-      address: { address: this.remote.host, port: this.remote.port, family: 1 },
+      address: { address: this.remote.host, port: this.remote.port, family: familyOf(this.remote.host) },
     })
   }
 
@@ -392,7 +397,7 @@ export class RemoteTunnel {
         reject(new Error('tcp timeout'))
       }, 4000)
       tcp.connect({
-        address: { address: candidate.host, port: candidate.port, family: 1 },
+        address: { address: candidate.host, port: candidate.port, family: familyOf(candidate.host) },
         timeout: 4000,
       }).then(() => {
         clearTimeout(timer)
@@ -406,10 +411,11 @@ export class RemoteTunnel {
     })
   }
 
-  /** 打洞：先狂发 PUNCH，收到回声后转成可靠 UDP 链路。 */
+  /** 打洞：先狂发 PUNCH，收到回声后转成可靠 UDP 链路。IPv6 候选无需打洞，回声即直连。 */
   private async punchUdp(candidate: Candidate, hostId: string): Promise<Link> {
+    const family = familyOf(candidate.host)
     const udp = socket.constructUDPSocketInstance()
-    await udp.bind({ address: '0.0.0.0', port: 0, family: 1 })
+    await udp.bind({ address: family === 2 ? '::' : '0.0.0.0', port: 0, family })
     const token = utf8('DSHR1PUNCH:' + hostId)
 
     const opened = await new Promise<Candidate | null>((resolve) => {
@@ -429,7 +435,7 @@ export class RemoteTunnel {
       const sender = setInterval(() => {
         udp.send({
           data: concat([new Uint8Array([1, 0x04]), new Uint8Array([0, 0, 0, 0]), token]).buffer as ArrayBuffer,
-          address: { address: candidate.host, port: candidate.port, family: 1 },
+          address: { address: candidate.host, port: candidate.port, family },
         })
       }, 250)
       setTimeout(() => clearInterval(sender), 2600)
@@ -470,7 +476,7 @@ export class RemoteTunnel {
           reject(new Error(message.message))
         }
       })
-      tcp.connect({ address: { address: relay.host, port: relay.port, family: 1 }, timeout: 5000 })
+      tcp.connect({ address: { address: relay.host, port: relay.port, family: familyOf(relay.host) }, timeout: 5000 })
         .then(() => {
           const join = { t: 'join', room: relay.room, role: 'guest', token: relay.token, name: 'harmonyos' }
           tcp.send({ data: utf8(JSON.stringify(join) + '\n').buffer as ArrayBuffer })

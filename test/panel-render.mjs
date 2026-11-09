@@ -125,6 +125,7 @@ const status = {
     { kind: 'tcp', host: '138.246.3.135', port: 45871, label: 'wan' },
   ],
   nat: { behavior: 'cone', mapped: [{ address: '138.246.3.135', port: 45873 }], at: now },
+  ipv6: ['2001:4ca0:205:66a8:6cee:7c7b:d86c:a111'],
   relay: { configured: false, state: 'off' },
   peers: [
     {
@@ -161,7 +162,7 @@ const LANG = process.env.PANEL_LANG === 'en' ? 'en' : 'zh'
 const EXPECT = {
   zh: {
     lang: 'zh-CN',
-    live: ['点对点隧道', '运行中', 'a89a819e596d7832', 'tcp 45871', 'cone', '1h 2m', 'Mate 60', '直连 UDP', '生成配对码', '可访问目录', 'HLib', '配对密钥', '撤销全部配对'],
+    live: ['点对点隧道', '运行中', 'a89a819e596d7832', 'tcp 45871', 'cone', '2001:4ca0', '1h 2m', 'Mate 60', '直连 UDP', '生成配对码', '可访问目录', 'HLib', '配对密钥', '撤销全部配对'],
     more: '还有 2 个目录',
     stopped: '已停止',
     emptyClients: '当前没有设备连接',
@@ -169,7 +170,7 @@ const EXPECT = {
   },
   en: {
     lang: 'en-US',
-    live: ['peer-to-peer tunnel', 'Running', 'a89a819e596d7832', 'tcp 45871', 'cone', '1h 2m', 'Mate 60', 'direct UDP', 'Create pairing code', 'Browsable folders', 'HLib', 'Pairing secret', 'Revoke all pairings'],
+    live: ['peer-to-peer tunnel', 'Running', 'a89a819e596d7832', 'tcp 45871', 'cone', '2001:4ca0', '1h 2m', 'Mate 60', 'direct UDP', 'Create pairing code', 'Browsable folders', 'HLib', 'Pairing secret', 'Revoke all pairings'],
     more: '2 more folders',
     stopped: 'Stopped',
     emptyClients: 'No device is connected',

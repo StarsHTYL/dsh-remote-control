@@ -21,6 +21,7 @@ function normalize(config) {
   return {
     name: typeof raw.name === 'string' && raw.name ? raw.name : os.hostname(),
     bindHost: typeof raw.bindHost === 'string' && raw.bindHost ? raw.bindHost : '0.0.0.0',
+    ipv6: raw.ipv6 !== false,
     tcpPort: Number.isInteger(raw.tcpPort) ? raw.tcpPort : 45871,
     udpPort: Number.isInteger(raw.udpPort) ? raw.udpPort : 45873,
     autoStart: raw.autoStart !== false,
