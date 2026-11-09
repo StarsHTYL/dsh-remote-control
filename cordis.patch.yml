@@ -1,0 +1,8 @@
+- insert:
+    - id: dsh-remote-control
+      name: '@local/dsh-remote-control'
+      config:
+        autoStart: true
+        bindHost: '0.0.0.0'
+        tcpPort: 45871
+        udpPort: 45873

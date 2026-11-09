@@ -1,0 +1,61 @@
+{
+  "name": "@local/dsh-remote-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Peer-to-peer remote access for this Harness: NAT hole punching, encrypted tunnel, remote file and session control.",
+  "license": "MIT",
+  "author": "StarsHTYL",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/StarsHTYL/dsh-remote-control.git"
+  },
+  "homepage": "https://github.com/StarsHTYL/dsh-remote-control#readme",
+  "bugs": {
+    "url": "https://github.com/StarsHTYL/dsh-remote-control/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "remote",
+    "nat-traversal",
+    "hole-punching",
+    "stun",
+    "harmonyos"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./relay": "./relay/relay.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "relay",
+    "docs",
+    "tools",
+    "client",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
