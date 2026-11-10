@@ -16,8 +16,7 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { connectToHost, RemoteClient, parseOffer } from '../lib/client.js'
-import { generateIdentity } from '../lib/channel.js'
+import { connectToHost, RemoteClient, loadClientIdentity, parseOffer } from '../lib/client.js'
 
 function usage() {
   console.error(`usage: remote-client.mjs --pair <code> <command> [args]
@@ -26,8 +25,11 @@ commands:
   info                          host information and allowed roots
   status                        live endpoint status
   sessions                      list sessions
+  models                        list routable models and the default
+  model <sessionId> <prov/model>  switch the model of one session
   prompt <sessionId> <text>     queue a prompt into a session
   cancel <sessionId>            cancel the running turn
+  audit [limit]                 recent access-log entries
   ls <path>                     list a directory
   get <remotePath> <localPath>  download a file
   put <localPath> <remotePath>  upload a file
@@ -99,7 +101,7 @@ if (!args.command || !args.pair) {
 }
 
 const offer = parseOffer(args.pair)
-const identity = generateIdentity()
+const identity = loadClientIdentity()
 const onStatus = (event) => {
   if (args.verbose) console.error(`[${event.phase}] ${event.remote ?? ''} ${event.error ?? ''}`)
 }
@@ -121,6 +123,27 @@ if (args.verbose) console.error(`connected via ${connection.transport} (${connec
 const client = new RemoteClient({ channel: connection.channel, device: { name: 'dsh-remote-cli', os: process.platform } })
 const [first, second] = args.rest
 
+// A device the host has never seen is admitted only far enough to be approved.
+try {
+  const info = await client.call('sys.info')
+  if (info.approved === false) {
+    const device = info.device ?? {}
+    console.error(`\n这台设备还没被批准：${device.name ?? 'unknown'}  (id ${device.id ?? '?'})`)
+    console.error('在主机上：设置 → 远程访问 → 待审批设备 → 批准')
+    console.error('或者让 Agent 调用 remote_control_devices { action: "approve", deviceId: "' + (device.id ?? '…') + '" }\n')
+    console.error('等待批准中…')
+    const approved = await client.waitForApproval({ timeoutMs: 180000 })
+    if (!approved) {
+      console.error('等待超时，退出。')
+      process.exit(3)
+    }
+    console.error('已批准，继续。\n')
+  }
+} catch (error) {
+  console.error(`handshake ok but sys.info failed: ${error.message}`)
+  process.exit(1)
+}
+
 try {
   switch (args.command) {
     case 'info':
@@ -133,6 +156,33 @@ try {
       const { items } = await client.call('session.list')
       for (const item of items) {
         console.log(`${item.sessionId}\t${item.running ? 'running' : 'idle'}\t${item.title}\t${item.cwd}`)
+      }
+      break
+    }
+    case 'models': {
+      const catalog = await client.call('model.catalog')
+      console.log(`default: ${catalog.default?.provider ?? '?'}/${catalog.default?.model ?? '?'}`)
+      for (const group of catalog.groups ?? []) {
+        console.log(`\n${group.name} (${group.id})`)
+        for (const model of group.models ?? []) {
+          const efforts = model.reasoning?.efforts?.map((effort) => effort.id).join(',')
+          console.log(`  ${model.id}\t${model.name}${efforts ? `\t[${efforts}]` : ''}`)
+        }
+      }
+      break
+    }
+    case 'model': {
+      if (!first || !second) throw new Error('model needs <sessionId> <provider>/<model>')
+      const [provider, model] = String(second).split('/')
+      if (!provider || !model) throw new Error('use <sessionId> <provider>/<model>')
+      console.log(JSON.stringify(await client.call('session.selectModel', { sessionId: first, provider, model }), null, 2))
+      break
+    }
+    case 'audit': {
+      const { entries } = await client.call('audit.tail', { limit: Number(first ?? 20) })
+      for (const entry of entries) {
+        const when = new Date(entry.at).toISOString().slice(11, 19)
+        console.log(`${when}  ${String(entry.event).padEnd(10)} ${(entry.deviceName || '-').padEnd(16)} ${String(entry.method || '-').padEnd(16)} ${entry.ok ? 'ok' : entry.code || 'fail'}\t${entry.detail ?? ''}`)
       }
       break
     }

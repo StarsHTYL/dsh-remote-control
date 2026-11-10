@@ -378,9 +378,30 @@ export class RemoteTunnel {
     return offer
   }
 
+  /**
+   * 设备审批绑定的是**公钥**，所以这把密钥必须跨进程保存。
+   * 不传 privateKeyPem 时每次连接都会生成新身份，主机那边每次都要重新批准；
+   * 把 getIdentityPem() 的返回值存进 preferences 再传回来即可只批一次。
+   */
+  constructor(privateKeyPem: string = '') {
+    this.privateKeyPem = privateKeyPem
+  }
+
+  private privateKeyPem: string
+
+  getIdentityPem(): string {
+    return this.privateKeyPem
+  }
+
   private async ensureIdentity(): Promise<void> {
     const generator = cryptoFramework.createAsyKeyGenerator('X25519')
-    const pair = await generator.generateKeyPair()
+    let pair: cryptoFramework.KeyPair
+    if (this.privateKeyPem) {
+      pair = await generator.convertPemKeySync(this.privateKeyPem, '')
+    } else {
+      pair = await generator.generateKeyPair()
+      this.privateKeyPem = pair.priKey.getEncoded()
+    }
     this.privateKey = pair.priKey
     // 从 PEM 里取回 32 字节裸公钥，保证与协议里的 b64u(pk) 一致。
     const pem = pair.pubKey.getEncoded()

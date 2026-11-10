@@ -51,12 +51,14 @@ Harness 的 Web UI 只监听 `127.0.0.1`，出了这台电脑就够不着。常�
 | 目录操作 | `fs.mkdir` / `fs.remove` / `fs.rename` | |
 | 会话列表 | `session.list` | 标题、运行状态、工作目录 |
 | 会话控制 | `session.create` / `session.prompt` / `session.cancel` | 远程给 Agent 下指令 |
+| 模型控制 | `model.catalog` / `session.selectModel` | 列出可用模型与推理档位，切换某个会话的模型 |
+| 访问日志 | `audit.tail` | 谁在什么时候调了什么、成功与否 |
 | 实时跟随 | `session.watch` / `session.unwatch` | 推送 `session.frame` 事件 |
 | 端口转发 | `tunnel.open` / `tunnel.write` / `tunnel.close` | 把原生 Web UI 搬进 WebView |
 
-Agent 侧还注册了 6 个工具（`remote_control_status` / `_start` / `_stop` / `_pair` / `_clients` / `_disconnect`），可以直接在对话里让 Agent 生成配对码。
+Agent 侧注册了 7 个工具（`remote_control_status` / `_start` / `_stop` / `_pair` / `_devices` / `_clients` / `_disconnect`），可以直接在对话里生成配对码、批准设备。
 
-设置页（设置 → **远程访问**）提供状态、**配对二维码**、已连接设备、可访问目录与撤销配对。二维码由内置编码器实时生成（byte 模式、ECC L、版本自适应），手机客户端直接扫即可，不需要联网、不调用任何第三方服务。
+设置页（设置 → **远程访问**）提供状态、**配对二维码**、待审批设备、已连接/已授权设备、最近活动、可访问目录与撤销配对。二维码由内置编码器实时生成（byte 模式、ECC L、版本自适应），手机客户端直接扫即可，不需要联网、不调用任何第三方服务。
 
 ## 工作方式
 
@@ -99,15 +101,22 @@ STUN + 打洞                 公网映射探测，双向 PUNCH
 
 二维码里就是那串文本（870 字节 → 101×101 模块的 v21 符号），手机端用 `@kit.ScanKit` 扫出来直接喂给客户端即可。
 
+> 拿到配对码只是"够得着门"。第一次连接时主机把它记为**待审批设备**，在设置页点「批准」之前，除了读取主机信息什么都做不了。客户端要保存自己的 X25519 密钥（`~/.dsh-remote-client/identity.json`），否则每次重连都是新设备、每次都要重新审批。
+
 ### 3. 连接
 
 ```powershell
 node tools/remote-client.mjs --pair "dshr1.…" info
 node tools/remote-client.mjs --pair "dshr1.…" sessions
+node tools/remote-client.mjs --pair "dshr1.…" models
+node tools/remote-client.mjs --pair "dshr1.…" model <sessionId> deepseek-official/deepseek-v4-pro
+node tools/remote-client.mjs --pair "dshr1.…" audit 20
 node tools/remote-client.mjs --pair "dshr1.…" ls "E:\HarmonyOS"
 node tools/remote-client.mjs --pair "dshr1.…" put .\photo.jpg "E:\Uploads\photo.jpg"
 node tools/remote-client.mjs --pair "dshr1.…" prompt <sessionId> "跑一下测试"
 ```
+
+第一次运行时它会打印自己的设备 ID 并等待主机批准（最多 3 分钟）。
 
 ## 客户端
 
@@ -142,6 +151,7 @@ node tools/remote-client.mjs --pair "dshr1.…" prompt <sessionId> "跑一下测
         tcpPort: 45871            # 直连 / 中继端口
         udpPort: 45873            # 打洞端口
         autoStart: true
+        autoApprove: false        # true 则不弹审批，任何拿到配对码的设备直接放行
         roots: []                 # 留空 = 所有会话工作区 + 家目录；填了就只开放这些目录
         relay:
           host: ''                # 中继服务器（见下）
@@ -174,15 +184,17 @@ node relay/relay.js --port 45880 --token <共享口令>
 ## 安全模型
 
 * **握手**：X25519 ECDH，`HMAC-SHA256(配对密钥, "dshr1/c" ‖ …)` 双向证明；密钥 `= HKDF(ECDH ‖ 配对密钥)`。中继与中间人都无法伪造或解密。
+* **设备审批**：配对码只证明"够得着门"。每台客户端用自己的 X25519 密钥连接，主机按公钥记录设备；新设备默认 `pending`，只有 `sys.info` / `sys.ping` 可用，其余方法一律返回 `device-pending`，直到在设置页批准。可以随时撤销或拉黑某台设备，拉黑在握手阶段就断开。
 * **传输**：AES-256-GCM，每帧独立随机 nonce 与认证标签；分片认证失败即丢弃。
 * **路径**：所有文件路径限制在 `roots` 内，越界返回 `forbidden-path`。
+* **访问日志**：每次 RPC 都记录时间、设备、方法、结果、耗时与目标路径（或 prompt 前 80 字），连接/断开/审批/拒绝同样入账；内存保留最近 400 条供设置页展示，同时追加到 `access.log.jsonl`（4 MiB 轮转一次）。
 * **设置页 API**：复用 Harness 自身鉴权（`connection.requestRejection`），未登录请求 401。
-* **撤销**：轮换配对密钥并断开全部客户端，旧配对码立即失效。
+* **撤销**：轮换配对密钥并断开全部客户端，旧配对码立即失效；已授权设备记录仍在，可单独移除或拉黑。
 
 边界（请务必知晓）：
 
-* 配对码是**长期共享密钥**（存于 `dataDir/identity.json`），不是每设备密钥；拿到码的人在你撤销之前都能连；
-* 没有设备审批弹窗、没有访问日志、没有频率限制；
+* 审批绑定的是客户端密钥，不是人；任何拿到某台已批准设备密钥文件的程序都能以该设备身份连接。
+* 日志是本机明文，能读到 `%DSH_HOME%` 的人也能读到它。
 * 协议版本固定为 1，没有重协商或前向保密的密钥更新。
 
 ## 已知限制与路线图
@@ -197,12 +209,16 @@ node relay/relay.js --port 45880 --token <共享口令>
 | 中继跑在真实公网机 | **未验证** |
 | 设置页渲染 | 用极简 React 运行时做过无头渲染断言，**未做像素级验证** |
 | 配对二维码 | 无头测试里用 jsQR 反向解码成功（含 870 字节真实配对码） |
+| 设备审批 + 访问日志 | 端到端测试；线上实测「待审批 → 批准 → 调用放行」 |
+| 模型控制 | 线上实测 `model.catalog` 返回真实模型目录 |
 | 鸿蒙 SDK | 未在 DevEco 编译验证 |
 
 路线图：
 
 - [x] 设置页内直接渲染配对二维码（内置 QR 编码器，无依赖）
-- [ ] 每设备密钥 + 首次连接审批 + 访问日志
+- [x] 每设备密钥 + 首次连接审批
+- [x] 访问日志（设置页 + JSONL）
+- [x] 远端模型控制（列出目录 / 切换会话模型）
 - [ ] 文件传输的并行流 / 压缩
 - [ ] 侧边栏一键入口与「远程在线」状态胶囊
 - [ ] 公网中继的 Dockerfile 与一键部署脚本
@@ -225,15 +241,17 @@ $env:JSQR_PATH="$env:TEMP\jsqr.js"; node test/qr.mjs
 ## 目录结构
 
 ```
-index.js                 Host 插件入口：配置、6 个工具、/dsh-remote HTTP API
+index.js                 Host 插件入口：配置、7 个工具、/dsh-remote HTTP API
 client.js                设置页「远程访问」（不打包的浏览器模块）
 lib/channel.js           握手 + AEAD 帧 + 分片
 lib/link-tcp.js          TCP 消息链路
 lib/link-udp.js          可靠 UDP（序号/ACK/重传/乱序缓存/保活）
 lib/stun.js              STUN 公网端点探测
 lib/server.js            监听、配对、打洞、中继、peer 管理
-lib/rpc.js               文件 / 会话 / 隧道 RPC
-lib/client.js            参考客户端（连接编排 + RPC）
+lib/devices.js           设备注册表（公钥 → 审批状态）
+lib/audit.js             访问日志（环形缓冲 + JSONL）
+lib/rpc.js               文件 / 会话 / 模型 / 隧道 / 日志 RPC
+lib/client.js            参考客户端（连接编排 + RPC + 身份持久化）
 relay/relay.js           独立中继进程
 tools/remote-client.mjs  CLI 客户端
 client/arkts/            鸿蒙（ArkTS）客户端 SDK

@@ -36,6 +36,9 @@ window.__ModuleLoader__.load({
         'group.status': 'Status',
         'group.pairing': 'Pairing',
         'group.clients': 'Connected devices',
+        'group.pending': 'Waiting for approval',
+        'group.devices': 'Approved devices',
+        'group.activity': 'Recent activity',
         'group.roots': 'Browsable folders',
         'group.security': 'Security',
         state: 'State',
@@ -54,6 +57,15 @@ window.__ModuleLoader__.load({
         pairingSteps: '1. Copy the code   2. Paste it into the client app (or scan the QR)   3. The client picks the fastest path: LAN, hole punching, then relay',
         scanHint: 'Scan to pair',
         ipv6None: 'no global address — IPv6 direct connect unavailable',
+        'action.approve': 'Approve',
+        'action.block': 'Deny',
+        'action.forget': 'Remove',
+        pendingHint: 'These devices hold the pairing code but can do nothing until you approve them. Approving binds this exact device key.',
+        pendingEmpty: 'No device is waiting.',
+        devicesEmpty: 'No device is approved yet.',
+        activityEmpty: 'No activity recorded yet.',
+        lastSeen: 'last seen',
+        denied: 'denied',
         expiresIn: 'expires in',
         expired: 'expired',
         clientsEmpty: 'No device is connected right now.',
@@ -90,6 +102,9 @@ window.__ModuleLoader__.load({
         'group.status': '状态',
         'group.pairing': '配对',
         'group.clients': '已连接设备',
+        'group.pending': '待审批设备',
+        'group.devices': '已授权设备',
+        'group.activity': '最近活动',
         'group.roots': '可访问目录',
         'group.security': '安全',
         state: '运行状态',
@@ -108,6 +123,15 @@ window.__ModuleLoader__.load({
         pairingSteps: '1. 复制配对码　2. 粘贴进客户端应用（或直接扫码）　3. 客户端自动选择最快路径：局域网 → 打洞 → 中继',
         scanHint: '扫码配对',
         ipv6None: '本机没有公网 IPv6 地址，无法走 IPv6 直连',
+        'action.approve': '批准',
+        'action.block': '拒绝',
+        'action.forget': '移除',
+        pendingHint: '这些设备已经拿到配对码，但在你批准之前不能读写任何东西。批准绑定的正是这台设备的密钥。',
+        pendingEmpty: '没有设备在等待审批。',
+        devicesEmpty: '还没有授权任何设备。',
+        activityEmpty: '还没有活动记录。',
+        lastSeen: '最后活动',
+        denied: '已拒绝',
         expiresIn: '剩余',
         expired: '已过期',
         clientsEmpty: '当前没有设备连接。',
@@ -453,6 +477,12 @@ window.__ModuleLoader__.load({
       const hours = Math.floor(minutes / 60)
       if (hours < 24) return `${hours}h ${minutes % 60}m`
       return `${Math.floor(hours / 24)}d ${hours % 24}h`
+    }
+
+    function formatClock(ms) {
+      const date = new Date(ms)
+      const pad = (value) => String(value).padStart(2, '0')
+      return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
     }
 
     function shortTransport(t, kind) {
@@ -858,13 +888,13 @@ window.__ModuleLoader__.load({
       }, [armed])
 
       const act = React.useCallback(
-        async (action, label) => {
+        async (action, label, extra) => {
           setBusy(label)
           try {
             const result = await request('/action', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ action }),
+              body: JSON.stringify({ action, ...(extra ?? {}) }),
             })
             if (result.code) setPairing({ code: result.code, exp: result.offer?.exp ?? 0 })
             if (result.status) setStatus((current) => ({ ...(current ?? {}), ...result.status }))
@@ -891,6 +921,10 @@ window.__ModuleLoader__.load({
       const stateLabel = t(`state.${state}`)
       const peers = Array.isArray(status?.peers) ? status.peers : []
       const roots = Array.isArray(status?.settings?.roots) ? status.settings.roots : []
+      const devices = Array.isArray(status?.devices) ? status.devices : []
+      const pendingDevices = devices.filter((device) => device.status === 'pending')
+      const approvedDevices = devices.filter((device) => device.status === 'approved')
+      const activity = Array.isArray(status?.audit) ? status.audit : []
       const nat = status?.nat ?? {}
       const mapped = Array.isArray(nat.mapped) ? nat.mapped[0] : null
       const relayConf = status?.settings?.relay ?? null
@@ -1029,8 +1063,135 @@ window.__ModuleLoader__.load({
             ),
       )
 
-      const rootsCard = h(
+      const pendingCard =
+        pendingDevices.length === 0
+          ? null
+          : h(
+              Group,
+              { title: t('group.pending'), note: t('pendingHint') },
+              pendingDevices.map((device, index) =>
+                h(
+                  'div',
+                  { key: device.id, style: { ...styles.row, ...(index === 0 ? styles.rowFirst : null) } },
+                  h(
+                    'div',
+                    { style: styles.peerRow },
+                    h('div', { style: styles.avatar }, String(device.name || '?').slice(0, 1).toUpperCase()),
+                    h(
+                      'div',
+                      { style: styles.rowMain },
+                      h('span', { style: styles.rowLabel }, device.name || device.id),
+                      h(
+                        'span',
+                        { style: { ...styles.rowHint, ...styles.mono } },
+                        `${device.id} · ${device.os || '—'} · ${device.lastRemote || ''}`,
+                      ),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { style: { display: 'flex', gap: 8 } },
+                    h(
+                      Btn,
+                      {
+                        small: true,
+                        variant: 'primary',
+                        busy: busy === `approve:${device.id}`,
+                        onClick: () => act('approve', `approve:${device.id}`, { deviceId: device.id }),
+                      },
+                      t('action.approve'),
+                    ),
+                    h(
+                      Btn,
+                      {
+                        small: true,
+                        variant: 'danger',
+                        busy: busy === `block:${device.id}`,
+                        onClick: () => act('block', `block:${device.id}`, { deviceId: device.id }),
+                      },
+                      t('action.block'),
+                    ),
+                  ),
+                ),
+              ),
+            )
+
+      const devicesCard = h(
         Group,
+        { title: t('group.devices') },
+        approvedDevices.length === 0
+          ? h('p', { style: { ...styles.empty, borderTop: 'none' } }, t('devicesEmpty'))
+          : approvedDevices.map((device, index) =>
+              h(
+                'div',
+                { key: device.id, style: { ...styles.row, ...(index === 0 ? styles.rowFirst : null) } },
+                h(
+                  'div',
+                  { style: styles.peerRow },
+                  h('div', { style: styles.avatar }, String(device.name || '?').slice(0, 1).toUpperCase()),
+                  h(
+                    'div',
+                    { style: styles.rowMain },
+                    h('span', { style: styles.rowLabel }, device.name || device.id),
+                    h(
+                      'span',
+                      { style: styles.rowHint },
+                      `${device.os || '—'} · ${t('lastSeen')} ${device.lastSeenAt ? formatDuration(now - device.lastSeenAt) : '—'} · ${device.connections ?? 0} ${t('requests')}`,
+                    ),
+                  ),
+                ),
+                h(
+                  Btn,
+                  {
+                    small: true,
+                    busy: busy === `forget:${device.id}`,
+                    onClick: () => act('forget', `forget:${device.id}`, { deviceId: device.id }),
+                  },
+                  t('action.forget'),
+                ),
+              ),
+            ),
+      )
+
+      const activityCard = h(
+        Group,
+        { title: t('group.activity') },
+        activity.length === 0
+          ? h('p', { style: { ...styles.empty, borderTop: 'none' } }, t('activityEmpty'))
+          : activity.slice(0, 8).map((entry, index) =>
+              h(
+                'div',
+                { key: entry.seq ?? index, style: { ...styles.row, ...(index === 0 ? styles.rowFirst : null) } },
+                h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'baseline', gap: 9, minWidth: 0, flex: '1 1 auto' } },
+                  h('span', { style: { ...styles.rowHint, ...styles.mono, flex: 'none' } }, formatClock(entry.at)),
+                  h('span', { style: { ...styles.rowLabel, fontSize: 12.5, flex: 'none' } }, entry.deviceName || '—'),
+                  h('span', { style: styles.badge }, entry.method || entry.event),
+                  entry.detail
+                    ? h(
+                        'span',
+                        { style: { ...styles.rowHint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                        entry.detail,
+                      )
+                    : null,
+                ),
+                h(
+                  'span',
+                  {
+                    style: {
+                      ...styles.rowHint,
+                      flex: 'none',
+                      color: entry.ok ? T('state-success-primary') : T('state-error-primary'),
+                    },
+                  },
+                  entry.ok ? 'ok' : entry.code || 'fail',
+                ),
+              ),
+            ),
+      )
+
+      const rootsCard = h(        Group,
         { title: t('group.roots'), note: t('rootsHint') },
         roots.length === 0
           ? h('p', { style: styles.empty }, '—')
@@ -1091,9 +1252,12 @@ window.__ModuleLoader__.load({
         error ? h('p', { style: styles.banner }, error) : null,
         statusCard,
         pairingCard,
+        pendingCard,
         clientsCard,
+        devicesCard,
         rootsCard,
         securityCard,
+        activityCard,
         h(
           'div',
           { style: styles.footer },

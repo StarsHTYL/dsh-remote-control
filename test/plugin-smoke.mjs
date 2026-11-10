@@ -44,7 +44,15 @@ apply(ctx, { autoStart: false, tcpPort: 0, udpPort: 0, dataDir })
 
 assert.deepEqual(
   [...tools.keys()].sort(),
-  ['remote_control_clients', 'remote_control_disconnect', 'remote_control_pair', 'remote_control_start', 'remote_control_status', 'remote_control_stop'],
+  [
+    'remote_control_clients',
+    'remote_control_devices',
+    'remote_control_disconnect',
+    'remote_control_pair',
+    'remote_control_start',
+    'remote_control_status',
+    'remote_control_stop',
+  ],
   'every management tool is registered',
 )
 assert.equal(route?.path, '/dsh-remote', 'HTTP route registered')

@@ -147,6 +147,9 @@ key    = HKDF-SHA256(ikm = Z ‖ psk, salt = n1 ‖ n2, info = "dshr1/tunnel", 3
 | `session.create` | `{ cwd?, agentPreset? }` | `{ sessionId }` |
 | `session.prompt` | `{ sessionId, text, mode?: "queue"\|"steer" }` | `{ accepted: true }` |
 | `session.cancel` | `{ sessionId }` | `{ accepted: true }` |
+| `model.catalog` | `{}` | `{ default, routableProviders, groups:[{id,name,models:[{id,name,description,reasoning}]}], failures }` |
+| `session.selectModel` | `{ sessionId, provider, model, reasoningEffort? }` | `{ selected }` |
+| `audit.tail` | `{ limit? }` | `{ entries:[{seq,at,event,deviceId,deviceName,method,ok,ms,detail,code,remote}] }` |
 | `session.watch` | `{ sessionId }` | `{ watchId }`；随后推送 `session.frame` 事件 |
 | `session.unwatch` | `{ watchId }` | `{ closed }` |
 | `tunnel.open` | `{ host?, port? }` | `{ streamId, host, port }`（默认连主机本机 127.0.0.1 的 Harness 端口） |
@@ -157,7 +160,8 @@ key    = HKDF-SHA256(ikm = Z ‖ psk, salt = n1 ‖ n2, info = "dshr1/tunnel", 3
 
 | 事件 | 负载 |
 | --- | --- |
-| `ready` | `{ peerId, host: <status> }` |
+| `ready` | `{ peerId, approved, device, host: <status> }` |
+| `device.approved` | `{ deviceId }` — 主机刚批准了这台设备，现在所有方法都可用 |
 | `session.frame` | `{ watchId, frame }` — `frame` 与 Harness 会话日志帧同构（`snapshot` / `event` / `assistant-stream`） |
 | `session.error` | `{ watchId, message }` |
 | `tunnel.data` | `{ streamId, data: b64 }` |
@@ -166,7 +170,29 @@ key    = HKDF-SHA256(ikm = Z ‖ psk, salt = n1 ‖ n2, info = "dshr1/tunnel", 3
 
 ### 错误码
 
-`bad-path`、`forbidden-path`、`offset-mismatch`、`no-stream`、`unavailable`、`bad-request`、`unknown-method`、`internal`。
+`bad-path`、`forbidden-path`、`offset-mismatch`、`no-stream`、`unavailable`、`bad-request`、`unknown-method`、`device-pending`、`internal`。
+
+---
+
+## 6.5 设备审批
+
+配对码只证明"能连上"，不等于"被授权"。主机按**客户端公钥**记录设备：
+
+| 状态 | 行为 |
+| --- | --- |
+| `pending` | 只允许 `sys.info` / `sys.ping`，其他方法返回 `device-pending` |
+| `approved` | 全部方法可用 |
+| `blocked` | 握手完成即被断开（客户端表现为链路关闭） |
+
+因此客户端**必须持久化自己的 X25519 私钥**：公钥变了就是另一台设备，会重新进入 `pending`。
+
+推荐流程：
+
+1. 连接、握手、进入 `ready`，读 `d.approved`。
+2. `false` 时提示用户"在主机上批准这台设备"，并定期调 `sys.info`（唯一在 `pending` 下可用的探测方法）直到 `approved === true`，或等待 `device.approved` 事件。
+3. `true` 后正常调用其他方法。
+
+`sys.info` 的返回里带 `device: {id, name, os, status}` 与 `approved`，设备 id 就是给用户看的那个 16 位十六进制串。
 
 ---
 
@@ -211,3 +237,5 @@ NAT 行为提示：`sys.info`/`ready` 里主机的 `nat.behavior` 是 `cone` 时
 - [ ] UDP 链路必须实现 ACK/重传/乱序缓存，否则大文件一定损坏。
 - [ ] 路径一律相对 `roots` 校验，客户端不要拼接 `..`。
 - [ ] 上传用 `offset` 累加，收到 `offset-mismatch` 时用返回的 `expected` 续传。
+- [ ] **持久化客户端密钥**，否则每次重连都要主机重新审批。
+- [ ] `device-pending` 要当作"等人批准"处理，不要当致命错误退出。

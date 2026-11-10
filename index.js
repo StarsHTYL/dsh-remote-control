@@ -25,6 +25,7 @@ function normalize(config) {
     tcpPort: Number.isInteger(raw.tcpPort) ? raw.tcpPort : 45871,
     udpPort: Number.isInteger(raw.udpPort) ? raw.udpPort : 45873,
     autoStart: raw.autoStart !== false,
+    autoApprove: raw.autoApprove === true,
     roots: workingRoots,
     relay: {
       host: typeof raw.relay?.host === 'string' ? raw.relay.host : '',
@@ -177,6 +178,37 @@ export function apply(ctx, config) {
       registered.push(
         ctx.tools.register(
           tool(
+            'remote_control_devices',
+            'List paired devices and their approval state, approve a pending device so it can use the tunnel, block it, or forget it entirely.',
+            {
+              type: 'object',
+              properties: {
+                action: { type: 'string', enum: ['list', 'approve', 'block', 'forget'], description: 'Default list.' },
+                deviceId: { type: 'string', description: 'Target device id, required for approve/block/forget.' },
+              },
+              additionalProperties: false,
+            },
+            async (args) => {
+              const action = args.action ?? 'list'
+              if (action === 'list') {
+                return {
+                  pending: server.devices.pending().map((device) => device.id),
+                  devices: server.devices.describe(),
+                  connected: server.status().peers.map((peer) => ({ deviceId: peer.device?.id, approved: peer.approved })),
+                }
+              }
+              if (!args.deviceId) throw new Error(`${action} needs deviceId`)
+              if (action === 'approve') return server.approveDevice(args.deviceId)
+              if (action === 'block') return server.blockDevice(args.deviceId)
+              return server.forgetDevice(args.deviceId)
+            },
+          ),
+        ),
+      )
+
+      registered.push(
+        ctx.tools.register(
+          tool(
             'remote_control_clients',
             'List remote clients currently connected over the remote-access tunnel, including their transport (tcp, udp, relay) and last activity.',
             EMPTY,
@@ -312,6 +344,7 @@ async function handleHttp(ctx, server, settings, req, res) {
           tcpPort: settings.tcpPort,
           udpPort: settings.udpPort,
           autoStart: settings.autoStart,
+          autoApprove: settings.autoApprove,
           relay: settings.relay.host ? settings.relay : null,
           roots: server.roots(),
         },
@@ -349,6 +382,25 @@ async function handleHttp(ctx, server, settings, req, res) {
       if (action === 'refresh-stun') {
         await server.refreshStun()
         sendJson(res, 200, { ok: true, status: server.status() })
+        return
+      }
+      if (action === 'approve' || action === 'block' || action === 'forget') {
+        const deviceId = String(body.deviceId ?? '')
+        if (!deviceId) {
+          sendJson(res, 400, { error: 'deviceId is required' })
+          return
+        }
+        const result =
+          action === 'approve'
+            ? await server.approveDevice(deviceId)
+            : action === 'block'
+              ? await server.blockDevice(deviceId)
+              : await server.forgetDevice(deviceId)
+        sendJson(res, 200, { ok: result.ok !== false, result, status: server.status() })
+        return
+      }
+      if (action === 'audit') {
+        sendJson(res, 200, { ok: true, entries: server.audit.tail(Number(body.limit ?? 60)) })
         return
       }
       sendJson(res, 400, { error: `unknown action: ${action}` })

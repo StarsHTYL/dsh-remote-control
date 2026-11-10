@@ -29,7 +29,7 @@ async function startRelay(port) {
   return child
 }
 
-async function makeServer({ relayPort = 0, tag = 'test', bindHost = '127.0.0.1' } = {}) {
+async function makeServer({ relayPort = 0, tag = 'test', bindHost = '127.0.0.1', autoApprove = true } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `dshr-${tag}-`))
   const server = new RemoteServer({
     ctx: { get: () => undefined },
@@ -37,6 +37,7 @@ async function makeServer({ relayPort = 0, tag = 'test', bindHost = '127.0.0.1' 
       name: `host-${tag}`,
       bindHost: bindHost,
       ipv6: true,
+      autoApprove: autoApprove,
       tcpPort: 0,
       udpPort: 0,
       roots: [dataDir],
@@ -154,6 +155,54 @@ async function v6Path() {
   console.log('ok: ipv6 path')
 }
 
+async function approvalPath() {
+  const { server, dataDir } = await makeServer({ tag: 'approval', autoApprove: false })
+  await server.start()
+  const { code } = await server.createOffer({ refresh: false })
+  const offer = decodeOffer(code)
+  const identity = generateIdentity()
+  const connection = await connectToHost({ offer, identity, onStatus: () => {} })
+  const client = new RemoteClient({ channel: connection.channel, device: { name: 'approval-test', os: 'win32' } })
+
+  const info = await client.call('sys.info')
+  assert.equal(info.approved, false, 'a fresh device is not approved')
+  assert.equal(info.device?.status, 'pending')
+
+  let deniedCode = null
+  try {
+    await client.call('fs.list', { path: dataDir })
+  } catch (error) {
+    deniedCode = error.code
+  }
+  assert.equal(deniedCode, 'device-pending', 'unapproved devices cannot read files')
+
+  const pending = server.devices.pending()
+  assert.equal(pending.length, 1, 'the device is listed as pending')
+
+  await server.approveDevice(pending[0].id)
+  const approved = await client.waitForApproval({ timeoutMs: 6000, intervalMs: 150 })
+  assert.ok(approved, 'approval reaches the live peer')
+
+  await exercise(client, dataDir, 'approved')
+
+  const tail = server.audit.tail(50)
+  assert.ok(tail.some((entry) => entry.method === 'fs.list' && entry.ok === false && entry.code === 'device-pending'), 'the denial is logged')
+  assert.ok(tail.some((entry) => entry.event === 'approve'), 'the approval is logged')
+  assert.ok(tail.some((entry) => entry.method === 'fs.write' && entry.ok === true), 'successful calls are logged')
+
+  client.close()
+  await sleep(200)
+
+  // A blocked device is refused at the handshake, not just at the RPC layer.
+  await server.blockDevice(pending[0].id)
+  const second = await connectToHost({ offer, identity, onStatus: () => {} })
+  const client2 = new RemoteClient({ channel: second.channel, device: { name: 'blocked-test', os: 'win32' } })
+  await assert.rejects(client2.call('sys.info'), /connection closed|channel closed|timeout/i, 'a blocked device never gets a channel')
+  client2.close()
+  await server.stop()
+  console.log('ok: device approval + audit trail')
+}
+
 async function relayPath() {  const relayPort = 45991
   const relay = await startRelay(relayPort)
   try {
@@ -182,5 +231,6 @@ async function relayPath() {  const relayPort = 45991
 await tcpPath()
 await udpPath()
 await v6Path()
+await approvalPath()
 await relayPath()
 console.log('all transport paths passed')
